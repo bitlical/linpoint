@@ -1,0 +1,42 @@
+name: Bug report
+description: Report incorrect Linpoint behavior or a regression
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for helping improve Linpoint. Please provide a minimal reproducer.
+  - type: input
+    id: version
+    attributes:
+      label: Linpoint version
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version and runtime mode
+      placeholder: CPython 3.14.1, free-threaded with GIL disabled
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include the model, implementation, and test command.
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
