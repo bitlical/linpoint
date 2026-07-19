@@ -22,7 +22,8 @@ keywords = [
     "testing",
 ]
 dependencies = [
-    "hypothesis>=6",
+    "hypothesis>=6,<6.156; python_version == '3.13'",
+    "hypothesis>=6; python_version != '3.13'",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -46,8 +47,11 @@ Source = "https://github.com/bitlical/linpoint"
 Issues = "https://github.com/bitlical/linpoint/issues"
 Changelog = "https://github.com/bitlical/linpoint/blob/main/CHANGELOG.md"
 
-[project.optional-dependencies]
+[dependency-groups]
 test = [
+    "pytest>=8",
+]
+dev = [
     "mypy>=1.13",
     "pytest>=8",
     "ruff>=0.9",

@@ -8,7 +8,7 @@ well-scoped feature proposals.
 Install [uv](https://docs.astral.sh/uv/), clone the repository, and run:
 
 ```console
-uv sync --extra test
+uv sync --group dev
 uv run pytest
 ```
 
@@ -16,7 +16,7 @@ The supported Python floor is 3.11. Changes to concurrency behavior should also
 be tested with a free-threaded interpreter:
 
 ```console
-uv run --isolated --python 3.14t --extra test pytest
+uv run --isolated --python 3.14t --no-default-groups --group test pytest
 ```
 
 ## Quality Checks

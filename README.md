@@ -41,7 +41,7 @@ python -m pip install linpoint
 For local development with uv:
 
 ```console
-uv sync --extra test
+uv sync --group dev
 uv run pytest
 ```
 

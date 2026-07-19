@@ -3,7 +3,8 @@ revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.15'",
-    "python_full_version < '3.15'",
+    "python_full_version == '3.13.*'",
+    "python_full_version < '3.13' or python_full_version == '3.14.*'",
 ]
 
 [[package]]
@@ -58,10 +59,29 @@ wheels = [
 
 [[package]]
 name = "hypothesis"
+version = "6.155.7"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version == '3.13.*'",
+]
+dependencies = [
+    { name = "sortedcontainers", marker = "python_full_version == '3.13.*'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f2/55/983b6bc1b6b343a5ff6020388f9d0680ab477be59a731517e6c4a0387100/hypothesis-6.155.7.tar.gz", hash = "sha256:d8d6091753d0669db3c90c5e5b346cb37c72f3dd9378c8413acb1fd5da63f7ea", size = 478291, upload-time = "2026-06-21T05:54:31.573Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/01/f8/c151e196d4f397ed9436a071e52666c70a2f021138dea828b0a461e245db/hypothesis-6.155.7-py3-none-any.whl", hash = "sha256:9f634bdb1f9e9b8ab6ba09431cf2deedb750c96978125a6fb3c5a0f6c6db4131", size = 544762, upload-time = "2026-06-21T05:54:29.506Z" },
+]
+
+[[package]]
+name = "hypothesis"
 version = "6.157.0"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.15'",
+    "python_full_version < '3.13' or python_full_version == '3.14.*'",
+]
 dependencies = [
-    { name = "sortedcontainers" },
+    { name = "sortedcontainers", marker = "python_full_version != '3.13.*'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/bf/ea/3d93589be7784d396a5a4d6aca6eb26783dfe9f40813a1f82ef71d7f6df7/hypothesis-6.157.0.tar.gz", hash = "sha256:5e4cd0af9261b06fc79e8aabe7d840384b3c24eaceae7e7e25ee3800a6d6ac58", size = 477477, upload-time = "2026-07-19T08:02:21.964Z" }
 wheels = [
@@ -206,24 +226,33 @@ name = "linpoint"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "hypothesis" },
+    { name = "hypothesis", version = "6.155.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.13.*'" },
+    { name = "hypothesis", version = "6.157.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version != '3.13.*'" },
 ]
 
-[package.optional-dependencies]
-test = [
+[package.dev-dependencies]
+dev = [
     { name = "mypy" },
     { name = "pytest" },
     { name = "ruff" },
 ]
+test = [
+    { name = "pytest" },
+]
 
 [package.metadata]
 requires-dist = [
-    { name = "hypothesis", specifier = ">=6" },
-    { name = "mypy", marker = "extra == 'test'", specifier = ">=1.13" },
-    { name = "pytest", marker = "extra == 'test'", specifier = ">=8" },
-    { name = "ruff", marker = "extra == 'test'", specifier = ">=0.9" },
+    { name = "hypothesis", marker = "python_full_version != '3.13.*'", specifier = ">=6" },
+    { name = "hypothesis", marker = "python_full_version == '3.13.*'", specifier = ">=6,<6.156" },
 ]
-provides-extras = ["test"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mypy", specifier = ">=1.13" },
+    { name = "pytest", specifier = ">=8" },
+    { name = "ruff", specifier = ">=0.9" },
+]
+test = [{ name = "pytest", specifier = ">=8" }]
 
 [[package]]
 name = "mypy"
