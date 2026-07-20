@@ -98,6 +98,8 @@ def check_history(
 
         if model.state_key is not None:
             state_identity: object = model.state_key(state)
+        elif type(state).__hash__ is object.__hash__:
+            state_identity = _UNCACHEABLE
         else:
             try:
                 hash(state)

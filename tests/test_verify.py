@@ -5,8 +5,12 @@ from hypothesis import settings
 from hypothesis import strategies as st
 
 from linpoint import (
+    Command,
     Inconclusive,
+    Model,
     NonLinearizable,
+    Outcome,
+    Returned,
     RunTimedOut,
     Spec,
     class_model,
@@ -116,3 +120,47 @@ def test_verify_surfaces_blocked_operation_timeouts() -> None:
         release.set()
 
     assert failure.value.active_threads
+
+
+def test_verify_detects_an_unlocked_counter_without_manual_barriers() -> None:
+    with pytest.raises(NonLinearizable):
+        verify(
+            implementation=CounterModel,
+            spec=SPEC,
+            max_threads=2,
+            max_calls=2,
+            attempts=1,
+            hypothesis_settings=ONE_EXAMPLE,
+        )
+
+
+def test_verify_does_not_mask_a_later_model_failure() -> None:
+    runs = 0
+    fail_model = False
+
+    def implementation() -> RacingCounter:
+        nonlocal runs, fail_model
+        runs += 1
+        fail_model = runs > 1
+        return RacingCounter()
+
+    def step(state: int, command: Command, observed: Outcome) -> tuple[bool, int]:
+        if fail_model:
+            raise RuntimeError("model failed")
+        amount = command.args[0]
+        return observed == Returned(state), state + amount
+
+    spec = Spec(
+        model=Model(initial=lambda: 0, step=step),
+        operations=(operation("fetch_add", st.just(1)),),
+    )
+
+    with pytest.raises(RuntimeError, match="model failed"):
+        verify(
+            implementation=implementation,
+            spec=spec,
+            max_threads=2,
+            max_calls=2,
+            attempts=1,
+            hypothesis_settings=ONE_EXAMPLE,
+        )

@@ -10,7 +10,7 @@ from ._checker import CheckResult, CheckStatus, check_history
 from ._generation import Spec, scenarios
 from ._history import Command, History, Raised, Returned
 from ._minimize import _minimize_non_linearizable
-from ._runner import RunTimedOut, Scenario, run
+from ._runner import RunTimedOut, Scenario, Scheduling, run
 
 State = TypeVar("State")
 
@@ -69,6 +69,14 @@ class _RunTimedOut(AssertionError):
     pass
 
 
+def _only_contains(error: BaseException, expected: type[BaseException]) -> bool:
+    if isinstance(error, BaseExceptionGroup):
+        return bool(error.exceptions) and all(
+            _only_contains(item, expected) for item in error.exceptions
+        )
+    return isinstance(error, expected)
+
+
 def verify(
     *,
     implementation: Callable[[], Any],
@@ -77,6 +85,7 @@ def verify(
     max_calls: int = 8,
     attempts: int = 3,
     run_timeout: float | None = 10.0,
+    scheduling: Scheduling = "stress",
     checker_timeout: float | None = None,
     hypothesis_settings: settings | None = None,
 ) -> None:
@@ -90,6 +99,8 @@ def verify(
         checker_timeout < 0 or not math.isfinite(checker_timeout)
     ):
         raise ValueError("checker_timeout must be finite and non-negative")
+    if scheduling not in ("native", "stress"):
+        raise ValueError("scheduling must be 'native' or 'stress'")
 
     best_history: History | None = None
     best_result: CheckResult | None = None
@@ -101,7 +112,12 @@ def verify(
         nonlocal best_history, best_result, timed_out_history, run_timeout_error
         for _ in range(attempts):
             try:
-                history = run(implementation, scenario, timeout=run_timeout)
+                history = run(
+                    implementation,
+                    scenario,
+                    timeout=run_timeout,
+                    scheduling=scheduling,
+                )
             except RunTimedOut as error:
                 run_timeout_error = error
                 raise _RunTimedOut from error
@@ -125,10 +141,14 @@ def verify(
     try:
         configured(search)()
     except Exception as error:
-        if best_history is not None and best_result is not None:
+        if (
+            best_history is not None
+            and best_result is not None
+            and _only_contains(error, _FoundViolation)
+        ):
             raise NonLinearizable(best_history, best_result) from error
-        if run_timeout_error is not None:
+        if run_timeout_error is not None and _only_contains(error, _RunTimedOut):
             raise run_timeout_error from error
-        if timed_out_history is not None:
+        if timed_out_history is not None and _only_contains(error, _CheckTimedOut):
             raise Inconclusive(timed_out_history) from error
         raise

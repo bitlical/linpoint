@@ -1,4 +1,5 @@
 from itertools import permutations
+from typing import ClassVar
 
 import pytest
 from hypothesis import given, settings
@@ -104,6 +105,45 @@ def test_checker_memoizes_hashable_states_without_an_explicit_key() -> None:
 
     assert result.status is CheckStatus.NON_LINEARIZABLE
     assert result.explored_states <= 2 ** (call_count - 1)
+
+
+def test_checker_does_not_retain_identity_hashed_states() -> None:
+    class IdentityState:
+        live: ClassVar[int] = 0
+        peak: ClassVar[int] = 0
+
+        def __init__(self) -> None:
+            type(self).live += 1
+            type(self).peak = max(type(self).peak, type(self).live)
+
+        def __del__(self) -> None:
+            type(self).live -= 1
+
+    call_count = 8
+    history = History(
+        tuple(
+            Call(
+                thread_id,
+                Command("ok" if thread_id < call_count - 1 else "invalid"),
+                Returned(None),
+                0,
+                1,
+            )
+            for thread_id in range(call_count)
+        )
+    )
+
+    def step(
+        state: IdentityState, command: Command, observed: object
+    ) -> tuple[bool, IdentityState]:
+        if command.name == "ok":
+            return True, IdentityState()
+        return False, state
+
+    result = check_history(Model(initial=IdentityState, step=step), history)
+
+    assert result.status is CheckStatus.NON_LINEARIZABLE
+    assert IdentityState.peak < 32
 
 
 def test_minimizer_removes_calls_that_are_not_needed_for_the_violation() -> None:

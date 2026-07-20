@@ -110,6 +110,24 @@ def test_counter_is_linearizable() -> None:
 Each generated scenario has at least two active threads. Every attempt creates
 a fresh `Counter`, while all threads in that attempt share that instance.
 
+## Scheduling
+
+`run()` and `verify()` use `scheduling="stress"` by default. Stress scheduling
+aligns operations in rounds, synchronizes the first source-line boundaries of
+concurrent Python methods, and adds bounded bytecode-level yields for methods
+defined on one executable source line. This increases the chance of exposing
+short race windows that normal GIL scheduling often misses.
+
+Use `scheduling="native"` to observe only the runtime's natural scheduling:
+
+```python
+history = linpoint.run(Counter, scenario, scheduling="native")
+```
+
+Stress scheduling deliberately changes timing. It improves race detection but
+does not guarantee that every concurrency bug will be triggered or reproduce
+an exact thread schedule.
+
 ## Pure Models
 
 Mutable model classes are copied before every checker branch. For more control,
@@ -194,6 +212,7 @@ internal thread schedule.
 | `Spec` and `operation()` | Define a model and Hypothesis argument strategies. |
 | `Model` and `class_model()` | Define pure or mutable sequential reference behavior. |
 | `run()` | Execute one explicit threaded `Scenario`. |
+| `Scheduling` | Select stress scheduling or unmodified native scheduling. |
 | `check_history()` | Check an existing `History` without running an implementation. |
 | `minimize_history()` | Remove calls while preserving a proven violation. |
 | `NonLinearizable` | Assertion containing the minimized history and checker result. |
@@ -233,6 +252,9 @@ assert not sys._is_gil_enabled()
   distributed clients.
 - Generated command arguments are independent. Values cannot yet refer to
   results returned by earlier generated commands.
+- Stress scheduling coordinates Python source lines and yields at bytecode
+  boundaries. C-extension methods and single-line operations may still require
+  several attempts to expose a race.
 - `verify()` limits each scenario to 10 seconds by default, and `run()` accepts
   an explicit timeout. Python cannot forcibly stop a blocked thread, so a timed-
   out worker remains a daemon until its operation returns. Keep a process-level

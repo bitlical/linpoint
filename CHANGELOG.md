@@ -13,6 +13,8 @@ uses [Semantic Versioning](https://semver.org/).
 - Hypothesis-backed operation and scenario generation.
 - Counterexample minimization and JSON history replay.
 - Typed public API for Python 3.11 and newer, including free-threaded CPython.
+- Stress scheduling for generated operations, with native scheduling as an
+  explicit opt-out.
 
 ### Changed
 
@@ -20,3 +22,6 @@ uses [Semantic Versioning](https://semver.org/).
 - Reduced precedence construction from quadratic to `O(n log n)` time.
 - Replaced one-call-at-a-time minimization with delta debugging.
 - Added bounded scenario execution and stable replay-validation errors.
+- Avoided retaining identity-hashed model states in the checker memo table.
+- Preserved unrelated implementation and model failures after Hypothesis finds
+  an earlier linearizability violation.

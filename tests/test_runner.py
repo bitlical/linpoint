@@ -1,5 +1,6 @@
 import threading
 import time
+from typing import Any, cast
 
 import pytest
 
@@ -40,7 +41,11 @@ def test_runner_records_operation_exceptions_as_outcomes() -> None:
         def pop(self, key: str) -> None:
             raise KeyError(key)
 
-    history = run(EmptyMap, Scenario(((Command("pop", ("missing",)),),)))
+    history = run(
+        EmptyMap,
+        Scenario(((Command("pop", ("missing",)),),)),
+        scheduling="native",
+    )
 
     assert history.calls[0].outcome == Raised("builtins.KeyError", ("missing",))
 
@@ -69,4 +74,13 @@ def test_runner_rejects_invalid_timeouts_before_starting_threads() -> None:
             RacingCounter,
             Scenario(((Command("fetch_add", (1,)),),)),
             timeout=float("nan"),
+        )
+
+
+def test_runner_rejects_invalid_scheduling_modes() -> None:
+    with pytest.raises(ValueError, match="scheduling must be 'native' or 'stress'"):
+        run(
+            RacingCounter,
+            Scenario(((Command("fetch_add", (1,)),),)),
+            scheduling=cast(Any, "invalid"),
         )
