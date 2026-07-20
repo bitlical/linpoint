@@ -4,7 +4,15 @@ import pytest
 from hypothesis import settings
 from hypothesis import strategies as st
 
-from linpoint import Inconclusive, NonLinearizable, Spec, class_model, operation, verify
+from linpoint import (
+    Inconclusive,
+    NonLinearizable,
+    RunTimedOut,
+    Spec,
+    class_model,
+    operation,
+    verify,
+)
 
 
 class CounterModel:
@@ -83,3 +91,28 @@ def test_verify_does_not_treat_checker_timeout_as_success() -> None:
             checker_timeout=0,
             hypothesis_settings=ONE_EXAMPLE,
         )
+
+
+def test_verify_surfaces_blocked_operation_timeouts() -> None:
+    release = threading.Event()
+
+    class BlockedCounter(CounterModel):
+        def fetch_add(self, amount: int) -> int:
+            release.wait()
+            return super().fetch_add(amount)
+
+    try:
+        with pytest.raises(RunTimedOut) as failure:
+            verify(
+                implementation=BlockedCounter,
+                spec=SPEC,
+                max_threads=2,
+                max_calls=2,
+                attempts=1,
+                run_timeout=0.01,
+                hypothesis_settings=ONE_EXAMPLE,
+            )
+    finally:
+        release.set()
+
+    assert failure.value.active_threads

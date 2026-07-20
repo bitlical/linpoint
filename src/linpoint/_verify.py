@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from typing import Any, TypeVar
 
@@ -8,8 +9,8 @@ from hypothesis import given, settings
 from ._checker import CheckResult, CheckStatus, check_history
 from ._generation import Spec, scenarios
 from ._history import Command, History, Raised, Returned
-from ._minimize import minimize_history
-from ._runner import Scenario, run
+from ._minimize import _minimize_non_linearizable
+from ._runner import RunTimedOut, Scenario, run
 
 State = TypeVar("State")
 
@@ -64,6 +65,10 @@ class _CheckTimedOut(AssertionError):
     pass
 
 
+class _RunTimedOut(AssertionError):
+    pass
+
+
 def verify(
     *,
     implementation: Callable[[], Any],
@@ -71,6 +76,7 @@ def verify(
     max_threads: int = 3,
     max_calls: int = 8,
     attempts: int = 3,
+    run_timeout: float | None = 10.0,
     checker_timeout: float | None = None,
     hypothesis_settings: settings | None = None,
 ) -> None:
@@ -78,24 +84,37 @@ def verify(
 
     if attempts < 1:
         raise ValueError("attempts must be at least 1")
+    if run_timeout is not None and (run_timeout < 0 or not math.isfinite(run_timeout)):
+        raise ValueError("run_timeout must be finite and non-negative")
+    if checker_timeout is not None and (
+        checker_timeout < 0 or not math.isfinite(checker_timeout)
+    ):
+        raise ValueError("checker_timeout must be finite and non-negative")
 
     best_history: History | None = None
     best_result: CheckResult | None = None
     timed_out_history: History | None = None
+    run_timeout_error: RunTimedOut | None = None
 
     @given(scenario=scenarios(spec, max_threads=max_threads, max_calls=max_calls))
     def search(scenario: Scenario) -> None:
-        nonlocal best_history, best_result, timed_out_history
+        nonlocal best_history, best_result, timed_out_history, run_timeout_error
         for _ in range(attempts):
-            history = run(implementation, scenario)
+            try:
+                history = run(implementation, scenario, timeout=run_timeout)
+            except RunTimedOut as error:
+                run_timeout_error = error
+                raise _RunTimedOut from error
             result = check_history(spec.model, history, timeout=checker_timeout)
             if result.status is CheckStatus.UNKNOWN:
                 timed_out_history = history
                 raise _CheckTimedOut
             if result.status is CheckStatus.NON_LINEARIZABLE:
-                minimal = minimize_history(spec.model, history, timeout=checker_timeout)
-                minimal_result = check_history(
-                    spec.model, minimal, timeout=checker_timeout
+                minimal, minimal_result = _minimize_non_linearizable(
+                    spec.model,
+                    history,
+                    result,
+                    timeout=checker_timeout,
                 )
                 if best_history is None or len(minimal) < len(best_history):
                     best_history = minimal
@@ -108,6 +127,8 @@ def verify(
     except Exception as error:
         if best_history is not None and best_result is not None:
             raise NonLinearizable(best_history, best_result) from error
+        if run_timeout_error is not None:
+            raise run_timeout_error from error
         if timed_out_history is not None:
             raise Inconclusive(timed_out_history) from error
         raise

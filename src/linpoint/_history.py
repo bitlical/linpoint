@@ -124,43 +124,76 @@ class History:
         """Restore a history produced by :meth:`to_json`."""
 
         decode_value = decode or (lambda value: value)
-        payload = json.loads(data)
-        if (
-            not isinstance(payload, dict)
-            or payload.get("schema") != "linpoint.history"
-            or payload.get("version") != 1
-            or not isinstance(payload.get("calls"), list)
-        ):
-            raise ValueError("unsupported Linpoint history format")
+        try:
+            payload = json.loads(data)
+            if (
+                not isinstance(payload, dict)
+                or payload.get("schema") != "linpoint.history"
+                or payload.get("version") != 1
+                or not isinstance(payload.get("calls"), list)
+            ):
+                raise ValueError
 
-        calls = []
-        for item in payload["calls"]:
-            command_data = item["command"]
-            outcome_data = item["outcome"]
-            command = Command(
-                command_data["name"],
-                tuple(decode_value(value) for value in command_data["args"]),
-                {
-                    name: decode_value(value)
-                    for name, value in command_data["kwargs"].items()
-                },
-            )
-            if outcome_data["kind"] == "returned":
-                outcome: Outcome = Returned(decode_value(outcome_data["value"]))
-            elif outcome_data["kind"] == "raised":
-                outcome = Raised(
-                    outcome_data["type"],
-                    tuple(decode_value(value) for value in outcome_data["args"]),
+            calls: list[Call] = []
+            for item in payload["calls"]:
+                if not isinstance(item, dict):
+                    raise TypeError
+                command_data = item["command"]
+                outcome_data = item["outcome"]
+                if not isinstance(command_data, dict) or not isinstance(
+                    outcome_data, dict
+                ):
+                    raise TypeError
+                if not isinstance(command_data.get("name"), str) or not isinstance(
+                    command_data.get("args"), list
+                ):
+                    raise TypeError
+                if not isinstance(command_data.get("kwargs"), dict) or not all(
+                    isinstance(name, str) for name in command_data["kwargs"]
+                ):
+                    raise TypeError
+
+                command = Command(
+                    command_data["name"],
+                    tuple(decode_value(value) for value in command_data["args"]),
+                    {
+                        name: decode_value(value)
+                        for name, value in command_data["kwargs"].items()
+                    },
                 )
-            else:
-                raise ValueError("unknown outcome kind in Linpoint history")
-            calls.append(
-                Call(
-                    item["thread"],
-                    command,
-                    outcome,
-                    item["invoked_at"],
-                    item["returned_at"],
+                if outcome_data.get("kind") == "returned" and "value" in outcome_data:
+                    outcome: Outcome = Returned(decode_value(outcome_data["value"]))
+                elif outcome_data.get("kind") == "raised":
+                    if not isinstance(outcome_data.get("type"), str) or not isinstance(
+                        outcome_data.get("args"), list
+                    ):
+                        raise TypeError
+                    outcome = Raised(
+                        outcome_data["type"],
+                        tuple(decode_value(value) for value in outcome_data["args"]),
+                    )
+                else:
+                    raise ValueError
+
+                integer_fields = (
+                    item.get("thread"),
+                    item.get("invoked_at"),
+                    item.get("returned_at"),
                 )
-            )
-        return cls(tuple(calls))
+                if not all(
+                    isinstance(value, int) and not isinstance(value, bool)
+                    for value in integer_fields
+                ):
+                    raise TypeError
+                calls.append(
+                    Call(
+                        item["thread"],
+                        command,
+                        outcome,
+                        item["invoked_at"],
+                        item["returned_at"],
+                    )
+                )
+            return cls(tuple(calls))
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("invalid Linpoint history") from error

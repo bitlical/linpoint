@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+import math
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 from ._history import Call, Command, History, Outcome, Raised, Returned
+
+
+class RunTimedOut(TimeoutError):
+    """Raised when one or more scenario threads exceed the execution timeout."""
+
+    def __init__(self, history: History, active_threads: tuple[int, ...]) -> None:
+        self.history = history
+        self.active_threads = active_threads
+        thread_list = ", ".join(map(str, active_threads)) or "unknown"
+        super().__init__(f"scenario execution timed out; active threads: {thread_list}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,10 +35,19 @@ class Scenario:
         object.__setattr__(self, "threads", threads)
 
 
-def run(implementation: Callable[[], Any], scenario: Scenario) -> History:
+def run(
+    implementation: Callable[[], Any],
+    scenario: Scenario,
+    *,
+    timeout: float | None = None,
+) -> History:
     """Execute a scenario against one shared implementation instance."""
 
+    if timeout is not None and (timeout < 0 or not math.isfinite(timeout)):
+        raise ValueError("timeout must be finite and non-negative")
+
     subject = implementation()
+    deadline = None if timeout is None else time.monotonic() + timeout
     start_gate = threading.Barrier(len(scenario.threads) + 1)
     event_lock = threading.Lock()
     calls: list[Call] = []
@@ -69,14 +90,41 @@ def run(implementation: Callable[[], Any], scenario: Scenario) -> History:
             target=worker,
             args=(thread_id, commands),
             name=f"linpoint-{thread_id}",
+            daemon=True,
         )
         for thread_id, commands in enumerate(scenario.threads)
     ]
+    started: list[threading.Thread] = []
+    try:
+        for thread in workers:
+            thread.start()
+            started.append(thread)
+    except BaseException:
+        start_gate.abort()
+        for thread in started:
+            thread.join()
+        raise
+
+    start_timed_out = False
+    try:
+        remaining = None if deadline is None else max(deadline - time.monotonic(), 0)
+        start_gate.wait(timeout=remaining)
+    except threading.BrokenBarrierError:
+        start_timed_out = True
+
     for thread in workers:
-        thread.start()
-    start_gate.wait()
-    for thread in workers:
-        thread.join()
+        remaining = None if deadline is None else max(deadline - time.monotonic(), 0)
+        thread.join(remaining)
+
+    active_threads = tuple(
+        thread_id for thread_id, thread in enumerate(workers) if thread.is_alive()
+    )
+    if start_timed_out or active_threads:
+        with event_lock:
+            partial_history = History(
+                tuple(sorted(calls, key=lambda call: call.invoked_at))
+            )
+        raise RunTimedOut(partial_history, active_threads)
 
     if worker_errors:
         raise worker_errors[0]

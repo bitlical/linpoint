@@ -5,7 +5,7 @@ from ._generation import Operation, Spec, operation, scenarios
 from ._history import Call, Command, History, Outcome, Raised, Returned
 from ._minimize import minimize_history
 from ._model import Model, class_model
-from ._runner import Scenario, run
+from ._runner import RunTimedOut, Scenario, run
 from ._verify import Inconclusive, NonLinearizable, verify
 
 try:
@@ -26,6 +26,7 @@ __all__ = [
     "Outcome",
     "Raised",
     "Returned",
+    "RunTimedOut",
     "Scenario",
     "Spec",
     "check_history",

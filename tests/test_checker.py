@@ -1,5 +1,6 @@
 from itertools import permutations
 
+import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -53,12 +54,56 @@ def test_real_time_order_can_make_register_history_non_linearizable() -> None:
     assert len(result.longest_prefix) == 2
 
 
-def test_checker_timeout_is_inconclusive() -> None:
+def test_empty_history_is_linearizable_with_zero_timeout() -> None:
     result = check_history(
         Model(initial=lambda: 0, step=register_step), History(()), timeout=0
     )
 
-    assert result.status is CheckStatus.UNKNOWN
+    assert result.status is CheckStatus.LINEARIZABLE
+
+
+@pytest.mark.parametrize("timeout", [-1.0, float("nan"), float("inf")])
+def test_checker_rejects_invalid_timeouts(timeout: float) -> None:
+    with pytest.raises(ValueError, match="timeout must be finite and non-negative"):
+        check_history(
+            Model(initial=lambda: 0, step=register_step), History(()), timeout=timeout
+        )
+
+
+def test_checker_handles_histories_deeper_than_python_recursion_limit() -> None:
+    history = History(
+        tuple(
+            Call(0, Command("read"), Returned(0), index * 2, index * 2 + 1)
+            for index in range(1_100)
+        )
+    )
+
+    result = check_history(Model(initial=lambda: 0, step=register_step), history)
+
+    assert result.status is CheckStatus.LINEARIZABLE
+    assert result.linearization is not None
+    assert len(result.linearization) == len(history)
+
+
+def test_checker_memoizes_hashable_states_without_an_explicit_key() -> None:
+    call_count = 10
+    history = History(
+        tuple(
+            Call(
+                thread_id,
+                Command("read" if thread_id < call_count - 1 else "invalid"),
+                Returned(0),
+                0,
+                1,
+            )
+            for thread_id in range(call_count)
+        )
+    )
+
+    result = check_history(Model(initial=lambda: 0, step=register_step), history)
+
+    assert result.status is CheckStatus.NON_LINEARIZABLE
+    assert result.explored_states <= 2 ** (call_count - 1)
 
 
 def test_minimizer_removes_calls_that_are_not_needed_for_the_violation() -> None:
@@ -85,6 +130,37 @@ def test_minimizer_removes_calls_that_are_not_needed_for_the_violation() -> None
     assert len(minimal) == 2
     assert {call.command.name for call in minimal} == {"fetch_add"}
     assert check_history(model, minimal).status is CheckStatus.NON_LINEARIZABLE
+
+
+def test_minimizer_avoids_rechecking_every_removable_call_individually() -> None:
+    step_calls = 0
+
+    def counter_step(
+        state: int, command: Command, observed: object
+    ) -> tuple[bool, int]:
+        nonlocal step_calls
+        step_calls += 1
+        if command.name == "noop":
+            return True, state
+        return observed == Returned(state), state + 1
+
+    calls = [
+        Call(0, Command("noop"), Returned(None), index * 2, index * 2 + 1)
+        for index in range(64)
+    ]
+    calls.extend(
+        (
+            Call(0, Command("add"), Returned(0), 200, 203),
+            Call(1, Command("add"), Returned(0), 201, 202),
+        )
+    )
+
+    minimal = minimize_history(
+        Model(initial=lambda: 0, step=counter_step), History(tuple(calls))
+    )
+
+    assert len(minimal) == 2
+    assert step_calls < 500
 
 
 @st.composite
@@ -126,7 +202,7 @@ def register_oracle(history: History) -> bool:
 
 
 @given(register_histories())
-@settings(max_examples=100, deadline=None)
+@settings(max_examples=500, deadline=None)
 def test_checker_agrees_with_an_independent_permutation_oracle(
     history: History,
 ) -> None:

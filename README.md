@@ -103,6 +103,7 @@ def test_counter_is_linearizable() -> None:
         max_threads=3,
         max_calls=8,
         attempts=5,
+        run_timeout=10.0,
     )
 ```
 
@@ -157,7 +158,7 @@ scenario = linpoint.Scenario(
     )
 )
 
-history = linpoint.run(Counter, scenario)
+history = linpoint.run(Counter, scenario, timeout=10.0)
 result = linpoint.check_history(counter_spec.model, history, timeout=1.0)
 
 if result.status is linpoint.CheckStatus.NON_LINEARIZABLE:
@@ -196,9 +197,18 @@ internal thread schedule.
 | `check_history()` | Check an existing `History` without running an implementation. |
 | `minimize_history()` | Remove calls while preserving a proven violation. |
 | `NonLinearizable` | Assertion containing the minimized history and checker result. |
+| `RunTimedOut` | Timeout containing the partial history and active thread IDs. |
 | `CheckStatus` | Distinguish linearizable, non-linearizable, and timed-out checks. |
 
 Linpoint ships a `py.typed` marker, so type checkers use its inline annotations.
+
+## Performance
+
+Linpoint builds real-time precedence constraints in `O(n log n)` time and uses
+an iterative depth-first search, so large sequential histories do not depend on
+Python's recursion limit. Hashable model states are memoized automatically.
+Provide `state_key=` for unhashable states so equivalent search branches can be
+deduplicated.
 
 ## Free-Threaded Python
 
@@ -223,8 +233,10 @@ assert not sys._is_gil_enabled()
   distributed clients.
 - Generated command arguments are independent. Values cannot yet refer to
   results returned by earlier generated commands.
-- Linpoint records completed calls. It does not currently classify deadlocks or
-  safely terminate blocked worker threads; use a process-level test timeout.
+- `verify()` limits each scenario to 10 seconds by default, and `run()` accepts
+  an explicit timeout. Python cannot forcibly stop a blocked thread, so a timed-
+  out worker remains a daemon until its operation returns. Keep a process-level
+  timeout when testing hostile or permanently blocking code.
 - The text report is intentionally small. HTML history visualization and
   partitioned checking are future work.
 

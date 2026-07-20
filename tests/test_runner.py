@@ -1,6 +1,9 @@
 import threading
+import time
 
-from linpoint import Command, Raised, Returned, Scenario, run
+import pytest
+
+from linpoint import Command, Raised, Returned, RunTimedOut, Scenario, run
 
 
 class RacingCounter:
@@ -40,3 +43,30 @@ def test_runner_records_operation_exceptions_as_outcomes() -> None:
     history = run(EmptyMap, Scenario(((Command("pop", ("missing",)),),)))
 
     assert history.calls[0].outcome == Raised("builtins.KeyError", ("missing",))
+
+
+def test_runner_times_out_blocked_operations() -> None:
+    release = threading.Event()
+
+    class Blocked:
+        def wait(self) -> None:
+            release.wait()
+
+    started = time.perf_counter()
+    try:
+        with pytest.raises(RunTimedOut) as failure:
+            run(Blocked, Scenario(((Command("wait"),),)), timeout=0.01)
+    finally:
+        release.set()
+
+    assert time.perf_counter() - started < 1
+    assert failure.value.active_threads == (0,)
+
+
+def test_runner_rejects_invalid_timeouts_before_starting_threads() -> None:
+    with pytest.raises(ValueError, match="timeout must be finite and non-negative"):
+        run(
+            RacingCounter,
+            Scenario(((Command("fetch_add", (1,)),),)),
+            timeout=float("nan"),
+        )
