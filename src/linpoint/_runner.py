@@ -5,8 +5,8 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from contextlib import suppress
 from dataclasses import dataclass
+from functools import lru_cache
 from types import CodeType, FrameType
 from typing import Any, Literal, TypeAlias
 
@@ -18,19 +18,17 @@ _STRESS_SYNC_TIMEOUT = 0.001
 _STRESS_YIELD_OPCODES = 64
 
 
-class _TraceState(threading.local):
-    target_code: CodeType | None
-    line_gate: threading.Barrier | None
-    synchronized_lines: int
-    yield_opcodes: bool
-    yielded_opcodes: int
-
-    def __init__(self) -> None:
-        self.target_code = None
-        self.line_gate = None
-        self.synchronized_lines = 0
-        self.yield_opcodes = False
-        self.yielded_opcodes = 0
+@lru_cache(maxsize=128)
+def _should_yield_opcodes(code: CodeType) -> bool:
+    body_line: int | None = None
+    for _, _, line in code.co_lines():
+        if line is None or line == code.co_firstlineno:
+            continue
+        if body_line is None:
+            body_line = line
+        elif line != body_line:
+            return False
+    return True
 
 
 class RunTimedOut(TimeoutError):
@@ -50,7 +48,15 @@ class Scenario:
     threads: tuple[tuple[Command, ...], ...]
 
     def __post_init__(self) -> None:
-        threads = tuple(tuple(commands) for commands in self.threads)
+        threads = self.threads
+        normalized = type(threads) is tuple
+        if normalized:
+            for commands in threads:
+                if type(commands) is not tuple:
+                    normalized = False
+                    break
+        if not normalized:
+            threads = tuple(tuple(commands) for commands in threads)
         if not threads:
             raise ValueError("a scenario must contain at least one thread")
         if not any(threads):
@@ -76,121 +82,139 @@ def run(
     deadline = None if timeout is None else time.monotonic() + timeout
     start_gate = threading.Barrier(len(scenario.threads) + 1)
     event_lock = threading.Lock()
-    calls: list[Call] = []
+    calls: list[Call | None] = []
     worker_errors: list[BaseException] = []
     next_event = 0
-    round_gates = tuple(
-        threading.Barrier(
+    if scheduling == "stress":
+        round_parties = tuple(
             sum(len(commands) > round_index for commands in scenario.threads)
+            for round_index in range(max(map(len, scenario.threads)))
         )
-        for round_index in range(max(map(len, scenario.threads)))
-    )
-    line_gates = tuple(
-        threading.Barrier(
-            sum(len(commands) > round_index for commands in scenario.threads)
-        )
-        for round_index in range(max(map(len, scenario.threads)))
-    )
-    trace_state = _TraceState()
+        round_gates = tuple(threading.Barrier(parties) for parties in round_parties)
+        line_gates = tuple(threading.Barrier(parties) for parties in round_parties)
+        stress_enabled = any(parties > 1 for parties in round_parties)
+    else:
+        round_gates = ()
+        line_gates = ()
+        stress_enabled = False
 
-    def stress_trace(frame: FrameType, event: str, argument: object) -> Any:
-        if (
-            trace_state.target_code is None
-            or frame.f_code is not trace_state.target_code
-        ):
-            return None
-        if event == "call":
-            frame.f_trace_opcodes = trace_state.yield_opcodes
-        elif event == "line":
-            gate = trace_state.line_gate
-            if (
-                trace_state.synchronized_lines < _STRESS_SYNC_LINES
-                and gate is not None
-                and not gate.broken
-            ):
-                remaining = (
-                    _STRESS_SYNC_TIMEOUT
-                    if deadline is None
-                    else max(
-                        min(deadline - time.monotonic(), _STRESS_SYNC_TIMEOUT),
-                        0,
-                    )
-                )
-                with suppress(threading.BrokenBarrierError):
-                    gate.wait(timeout=remaining)
-                trace_state.synchronized_lines += 1
-        elif event == "opcode" and trace_state.yielded_opcodes < _STRESS_YIELD_OPCODES:
-            trace_state.yielded_opcodes += 1
-            time.sleep(0)
-        return stress_trace
-
-    def record_invocation() -> int:
+    def record_invocation() -> tuple[int, int]:
         nonlocal next_event
         with event_lock:
             event = next_event
             next_event += 1
-            return event
+            slot = len(calls)
+            calls.append(None)
+            return event, slot
 
     def record_return(
-        thread_id: int, command: Command, outcome: Outcome, invoked_at: int
+        thread_id: int,
+        command: Command,
+        outcome: Outcome,
+        invoked_at: int,
+        slot: int,
     ) -> None:
         nonlocal next_event
         with event_lock:
             returned_at = next_event
             next_event += 1
-            calls.append(Call(thread_id, command, outcome, invoked_at, returned_at))
+            calls[slot] = Call(thread_id, command, outcome, invoked_at, returned_at)
 
-    def worker(thread_id: int, commands: tuple[Command, ...]) -> None:
+    def native_worker(thread_id: int, commands: tuple[Command, ...]) -> None:
+        try:
+            start_gate.wait()
+            for command in commands:
+                method: Callable[..., Any] = getattr(subject, command.name)
+                invoked_at, slot = record_invocation()
+                try:
+                    outcome: Outcome = Returned(method(*command.args, **command.kwargs))
+                except Exception as error:
+                    outcome = Raised.from_exception(error)
+                record_return(thread_id, command, outcome, invoked_at, slot)
+        except BaseException as error:
+            with event_lock:
+                worker_errors.append(error)
+
+    def stress_worker(thread_id: int, commands: tuple[Command, ...]) -> None:
+        target_code: CodeType | None = None
+        line_gate: threading.Barrier | None = None
+        synchronized_lines = 0
+        yield_opcodes = False
+        yielded_opcodes = 0
+        line_timeout = _STRESS_SYNC_TIMEOUT
+
+        def stress_trace(frame: FrameType, event: str, argument: object) -> Any:
+            nonlocal synchronized_lines, yielded_opcodes
+            if frame.f_code is not target_code:
+                return None
+            if event == "call":
+                frame.f_trace_opcodes = yield_opcodes
+            elif (
+                event == "line"
+                and synchronized_lines < _STRESS_SYNC_LINES
+                and line_gate is not None
+                and not line_gate.broken
+            ):
+                try:  # noqa: SIM105 - this is a tracing hot path
+                    line_gate.wait(timeout=line_timeout)
+                except threading.BrokenBarrierError:
+                    pass
+                synchronized_lines += 1
+            elif event == "opcode" and yielded_opcodes < _STRESS_YIELD_OPCODES:
+                yielded_opcodes += 1
+                time.sleep(0)
+            return stress_trace
+
         previous_trace = sys.gettrace()
-        if scheduling == "stress":
-            sys.settrace(stress_trace)
+        sys.settrace(stress_trace)
         try:
             start_gate.wait()
             for round_index, command in enumerate(commands):
                 method: Callable[..., Any] = getattr(subject, command.name)
-                invoked_at = record_invocation()
-                invocation_gate = round_gates[round_index]
-                trace_state.line_gate = line_gates[round_index]
-                stress_active = scheduling == "stress" and invocation_gate.parties > 1
+                invoked_at, slot = record_invocation()
+                stress_active = round_gates[round_index].parties > 1
                 if not stress_active:
-                    trace_state.line_gate = None
+                    line_gate = None
                 else:
+                    invocation_gate = round_gates[round_index]
+                    line_gate = line_gates[round_index]
                     function = getattr(method, "__func__", method)
                     code = getattr(function, "__code__", None)
-                    trace_state.target_code = (
-                        code if isinstance(code, CodeType) else None
+                    target_code = code if isinstance(code, CodeType) else None
+                    synchronized_lines = 0
+                    yielded_opcodes = 0
+                    yield_opcodes = target_code is not None and _should_yield_opcodes(
+                        target_code
                     )
-                    trace_state.synchronized_lines = 0
-                    if trace_state.target_code is not None:
-                        body_lines = {
-                            line
-                            for _, _, line in trace_state.target_code.co_lines()
-                            if line is not None
-                            and line != trace_state.target_code.co_firstlineno
-                        }
-                        trace_state.yield_opcodes = len(body_lines) <= 1
-                        trace_state.yielded_opcodes = 0
+                    line_timeout = (
+                        _STRESS_SYNC_TIMEOUT
+                        if deadline is None
+                        else max(
+                            min(deadline - time.monotonic(), _STRESS_SYNC_TIMEOUT),
+                            0,
+                        )
+                    )
                     invocation_gate.wait()
-                    if trace_state.target_code is None:
+                    if target_code is None:
                         time.sleep(0)
                 try:
                     outcome: Outcome = Returned(method(*command.args, **command.kwargs))
                 except Exception as error:
                     outcome = Raised.from_exception(error)
                 finally:
-                    trace_state.target_code = None
-                    trace_state.line_gate = None
-                    trace_state.yield_opcodes = False
-                record_return(thread_id, command, outcome, invoked_at)
+                    target_code = None
+                    line_gate = None
+                    yield_opcodes = False
+                record_return(thread_id, command, outcome, invoked_at, slot)
         except BaseException as error:
             for gate in (*round_gates, *line_gates):
                 gate.abort()
             with event_lock:
                 worker_errors.append(error)
         finally:
-            if scheduling == "stress":
-                sys.settrace(previous_trace)
+            sys.settrace(previous_trace)
 
+    worker = stress_worker if stress_enabled else native_worker
     workers = [
         threading.Thread(
             target=worker,
@@ -229,11 +253,9 @@ def run(
         for gate in (*round_gates, *line_gates):
             gate.abort()
         with event_lock:
-            partial_history = History(
-                tuple(sorted(calls, key=lambda call: call.invoked_at))
-            )
+            partial_history = History(tuple(call for call in calls if call is not None))
         raise RunTimedOut(partial_history, active_threads)
 
     if worker_errors:
         raise worker_errors[0]
-    return History(tuple(sorted(calls, key=lambda call: call.invoked_at)))
+    return History(tuple(call for call in calls if call is not None))

@@ -32,16 +32,16 @@ def _minimize_non_linearizable(
 ) -> tuple[History, CheckResult]:
     """Minimize a history already proven to be non-linearizable."""
 
-    calls = list(history.calls)
+    calls = history.calls
     granularity = 2
     while len(calls) >= 2:
         chunk_size = math.ceil(len(calls) / granularity)
         reduced = False
         for start in range(0, len(calls), chunk_size):
-            candidate = History((*calls[:start], *calls[start + chunk_size :]))
+            candidate = History(calls[:start] + calls[start + chunk_size :])
             candidate_result = check_history(model, candidate, timeout=timeout)
             if candidate_result.status is CheckStatus.NON_LINEARIZABLE:
-                calls = list(candidate.calls)
+                calls = candidate.calls
                 result = candidate_result
                 granularity = max(granularity - 1, 2)
                 reduced = True
@@ -53,4 +53,4 @@ def _minimize_non_linearizable(
             break
         granularity = min(len(calls), granularity * 2)
 
-    return History(tuple(calls)), result
+    return History(calls), result

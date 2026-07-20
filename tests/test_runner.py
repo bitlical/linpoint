@@ -50,6 +50,25 @@ def test_runner_records_operation_exceptions_as_outcomes() -> None:
     assert history.calls[0].outcome == Raised("builtins.KeyError", ("missing",))
 
 
+def test_runner_keeps_calls_in_invocation_order() -> None:
+    class Echo:
+        def value(self, value: int) -> int:
+            return value
+
+    scenario = Scenario(
+        tuple(
+            tuple(Command("value", (index,)) for index in range(20)) for _ in range(4)
+        )
+    )
+
+    history = run(Echo, scenario, scheduling="native")
+
+    assert len(history) == 80
+    assert [call.invoked_at for call in history] == sorted(
+        call.invoked_at for call in history
+    )
+
+
 def test_runner_times_out_blocked_operations() -> None:
     release = threading.Event()
 

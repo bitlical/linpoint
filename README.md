@@ -225,9 +225,15 @@ Linpoint ships a `py.typed` marker, so type checkers use its inline annotations.
 
 Linpoint builds real-time precedence constraints in `O(n log n)` time and uses
 an iterative depth-first search, so large sequential histories do not depend on
-Python's recursion limit. Hashable model states are memoized automatically.
-Provide `state_key=` for unhashable states so equivalent search branches can be
-deduplicated.
+Python's recursion limit. Histories with one forced real-time order use a
+linear fast path when calls are already invocation-ordered; branching checks
+iterate remaining calls as integer bit masks. Hashable model states are
+memoized automatically. Provide `state_key=` for unhashable states so
+equivalent search branches can be deduplicated.
+
+Public modules load on first use. Importing core history or checker APIs does
+not load Hypothesis, while `Spec`, `operation()`, `scenarios()`, and `verify()`
+load it when accessed.
 
 ## Free-Threaded Python
 

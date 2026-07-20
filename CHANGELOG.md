@@ -25,3 +25,9 @@ uses [Semantic Versioning](https://semver.org/).
 - Avoided retaining identity-hashed model states in the checker memo table.
 - Preserved unrelated implementation and model failures after Hypothesis finds
   an earlier linearizability violation.
+- Added a forced-order checker fast path and replaced generator-based DFS frames
+  with bit-mask iteration.
+- Reduced allocations in history minimization, JSON decoding, command creation,
+  and threaded result ordering.
+- Lazy-loaded public modules so core imports do not initialize Hypothesis or
+  package metadata until those APIs are accessed.

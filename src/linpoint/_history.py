@@ -6,6 +6,12 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, TypeAlias
 
+_EMPTY_KWARGS: Mapping[str, Any] = MappingProxyType({})
+
+
+def _empty_kwargs() -> Mapping[str, Any]:
+    return _EMPTY_KWARGS
+
 
 @dataclass(frozen=True, slots=True)
 class Command:
@@ -13,13 +19,14 @@ class Command:
 
     name: str
     args: tuple[Any, ...] = ()
-    kwargs: Mapping[str, Any] = field(default_factory=dict)
+    kwargs: Mapping[str, Any] = field(default_factory=_empty_kwargs)
 
     def __post_init__(self) -> None:
         if not self.name:
             raise ValueError("command name must not be empty")
         object.__setattr__(self, "args", tuple(self.args))
-        object.__setattr__(self, "kwargs", MappingProxyType(dict(self.kwargs)))
+        kwargs = MappingProxyType(dict(self.kwargs)) if self.kwargs else _EMPTY_KWARGS
+        object.__setattr__(self, "kwargs", kwargs)
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,30 +88,46 @@ class History:
     def to_json(self, *, encode: Callable[[Any], Any] | None = None) -> str:
         """Serialize a history whose values are JSON-compatible."""
 
-        encode_value = encode or (lambda value: value)
-        calls = []
+        calls: list[dict[str, Any]] = []
+        append_call = calls.append
         for call in self.calls:
-            if isinstance(call.outcome, Returned):
+            command = call.command
+            outcome_value = call.outcome
+            if encode is None:
+                command_args = list(command.args)
+                command_kwargs = dict(command.kwargs)
+            else:
+                command_args = [encode(value) for value in command.args]
+                command_kwargs = {
+                    name: encode(value) for name, value in command.kwargs.items()
+                }
+
+            if isinstance(outcome_value, Returned):
                 outcome = {
                     "kind": "returned",
-                    "value": encode_value(call.outcome.value),
+                    "value": (
+                        outcome_value.value
+                        if encode is None
+                        else encode(outcome_value.value)
+                    ),
                 }
             else:
                 outcome = {
                     "kind": "raised",
-                    "type": call.outcome.type_name,
-                    "args": [encode_value(value) for value in call.outcome.args],
+                    "type": outcome_value.type_name,
+                    "args": (
+                        list(outcome_value.args)
+                        if encode is None
+                        else [encode(value) for value in outcome_value.args]
+                    ),
                 }
-            calls.append(
+            append_call(
                 {
                     "thread": call.thread_id,
                     "command": {
-                        "name": call.command.name,
-                        "args": [encode_value(value) for value in call.command.args],
-                        "kwargs": {
-                            name: encode_value(value)
-                            for name, value in call.command.kwargs.items()
-                        },
+                        "name": command.name,
+                        "args": command_args,
+                        "kwargs": command_kwargs,
                     },
                     "outcome": outcome,
                     "invoked_at": call.invoked_at,
@@ -123,75 +146,86 @@ class History:
     ) -> History:
         """Restore a history produced by :meth:`to_json`."""
 
-        decode_value = decode or (lambda value: value)
         try:
             payload = json.loads(data)
             if (
-                not isinstance(payload, dict)
+                type(payload) is not dict
                 or payload.get("schema") != "linpoint.history"
                 or payload.get("version") != 1
-                or not isinstance(payload.get("calls"), list)
+                or type(payload.get("calls")) is not list
             ):
                 raise ValueError
 
             calls: list[Call] = []
             for item in payload["calls"]:
-                if not isinstance(item, dict):
+                if type(item) is not dict:
                     raise TypeError
                 command_data = item["command"]
                 outcome_data = item["outcome"]
-                if not isinstance(command_data, dict) or not isinstance(
-                    outcome_data, dict
+                if type(command_data) is not dict or type(outcome_data) is not dict:
+                    raise TypeError
+                if (
+                    type(command_data.get("name")) is not str
+                    or type(command_data.get("args")) is not list
                 ):
                     raise TypeError
-                if not isinstance(command_data.get("name"), str) or not isinstance(
-                    command_data.get("args"), list
-                ):
-                    raise TypeError
-                if not isinstance(command_data.get("kwargs"), dict) or not all(
-                    isinstance(name, str) for name in command_data["kwargs"]
-                ):
+                if type(command_data.get("kwargs")) is not dict:
                     raise TypeError
 
+                command_args = command_data["args"]
+                command_kwargs = command_data["kwargs"]
+                if decode is None:
+                    decoded_args = tuple(command_args)
+                    decoded_kwargs = command_kwargs
+                else:
+                    decoded_args = tuple(decode(value) for value in command_args)
+                    decoded_kwargs = {
+                        name: decode(value) for name, value in command_kwargs.items()
+                    }
                 command = Command(
                     command_data["name"],
-                    tuple(decode_value(value) for value in command_data["args"]),
-                    {
-                        name: decode_value(value)
-                        for name, value in command_data["kwargs"].items()
-                    },
+                    decoded_args,
+                    decoded_kwargs,
                 )
                 if outcome_data.get("kind") == "returned" and "value" in outcome_data:
-                    outcome: Outcome = Returned(decode_value(outcome_data["value"]))
+                    value = outcome_data["value"]
+                    outcome: Outcome = Returned(
+                        value if decode is None else decode(value)
+                    )
                 elif outcome_data.get("kind") == "raised":
-                    if not isinstance(outcome_data.get("type"), str) or not isinstance(
-                        outcome_data.get("args"), list
+                    if (
+                        type(outcome_data.get("type")) is not str
+                        or type(outcome_data.get("args")) is not list
                     ):
                         raise TypeError
+                    outcome_args = outcome_data["args"]
                     outcome = Raised(
                         outcome_data["type"],
-                        tuple(decode_value(value) for value in outcome_data["args"]),
+                        (
+                            tuple(outcome_args)
+                            if decode is None
+                            else tuple(decode(value) for value in outcome_args)
+                        ),
                     )
                 else:
                     raise ValueError
 
-                integer_fields = (
-                    item.get("thread"),
-                    item.get("invoked_at"),
-                    item.get("returned_at"),
-                )
-                if not all(
-                    isinstance(value, int) and not isinstance(value, bool)
-                    for value in integer_fields
+                thread_id = item.get("thread")
+                invoked_at = item.get("invoked_at")
+                returned_at = item.get("returned_at")
+                if (
+                    type(thread_id) is not int
+                    or type(invoked_at) is not int
+                    or type(returned_at) is not int
                 ):
                     raise TypeError
                 calls.append(
                     Call(
-                        item["thread"],
+                        thread_id,
                         command,
                         outcome,
-                        item["invoked_at"],
-                        item["returned_at"],
+                        invoked_at,
+                        returned_at,
                     )
                 )
             return cls(tuple(calls))

@@ -13,6 +13,11 @@ from ._model import Model
 from ._runner import Scenario
 
 State = TypeVar("State")
+_EMPTY_KWARGS: Mapping[str, SearchStrategy[Any]] = MappingProxyType({})
+
+
+def _empty_kwargs() -> Mapping[str, SearchStrategy[Any]]:
+    return _EMPTY_KWARGS
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,13 +26,14 @@ class Operation:
 
     name: str
     args: tuple[SearchStrategy[Any], ...] = ()
-    kwargs: Mapping[str, SearchStrategy[Any]] = field(default_factory=dict)
+    kwargs: Mapping[str, SearchStrategy[Any]] = field(default_factory=_empty_kwargs)
 
     def __post_init__(self) -> None:
         if not self.name:
             raise ValueError("operation name must not be empty")
         object.__setattr__(self, "args", tuple(self.args))
-        object.__setattr__(self, "kwargs", MappingProxyType(dict(self.kwargs)))
+        kwargs = MappingProxyType(dict(self.kwargs)) if self.kwargs else _EMPTY_KWARGS
+        object.__setattr__(self, "kwargs", kwargs)
 
 
 def operation(
@@ -49,18 +55,32 @@ class Spec(Generic[State]):
         operations = tuple(self.operations)
         if not operations:
             raise ValueError("a spec must contain at least one operation")
-        names = [operation.name for operation in operations]
-        if len(names) != len(set(names)):
-            raise ValueError("operation names must be unique")
+        names: set[str] = set()
+        for operation in operations:
+            if operation.name in names:
+                raise ValueError("operation names must be unique")
+            names.add(operation.name)
         object.__setattr__(self, "operations", operations)
 
 
 def _commands(operation: Operation) -> SearchStrategy[Command]:
+    name = operation.name
+    argument_strategies = operation.args
+    keyword_strategies = operation.kwargs
+
     @st.composite
     def command(draw: st.DrawFn) -> Command:
-        args = tuple(draw(strategy) for strategy in operation.args)
-        kwargs = {name: draw(strategy) for name, strategy in operation.kwargs.items()}
-        return Command(operation.name, args, kwargs)
+        args = (
+            tuple(draw(strategy) for strategy in argument_strategies)
+            if argument_strategies
+            else ()
+        )
+        if not keyword_strategies:
+            return Command(name, args)
+        kwargs = {
+            keyword: draw(strategy) for keyword, strategy in keyword_strategies.items()
+        }
+        return Command(name, args, kwargs)
 
     return command()
 
@@ -93,7 +113,7 @@ def scenarios(
                 max_size=max_calls - thread_count,
             )
         )
-        threads = [[first_commands[index]] for index in range(thread_count)]
+        threads = [[command] for command in first_commands]
         for thread_id, extra_command in extra_commands:
             threads[thread_id].append(extra_command)
         return Scenario(tuple(tuple(commands) for commands in threads))

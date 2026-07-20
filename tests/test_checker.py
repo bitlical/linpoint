@@ -55,6 +55,31 @@ def test_real_time_order_can_make_register_history_non_linearizable() -> None:
     assert len(result.longest_prefix) == 2
 
 
+def test_forced_real_time_order_ignores_history_storage_order() -> None:
+    write = Call(0, Command("write", (100,)), Returned(None), 0, 1)
+    read = Call(1, Command("read"), Returned(100), 2, 3)
+
+    result = check_history(
+        Model(initial=lambda: 0, step=register_step), History((read, write))
+    )
+
+    assert result.status is CheckStatus.LINEARIZABLE
+    assert result.linearization == (write, read)
+    assert result.longest_prefix == result.linearization
+    assert result.explored_states == 3
+
+
+def test_forced_illegal_call_reports_an_empty_prefix() -> None:
+    history = History((Call(0, Command("read"), Returned(1), 0, 1),))
+
+    result = check_history(Model(initial=lambda: 0, step=register_step), history)
+
+    assert result.status is CheckStatus.NON_LINEARIZABLE
+    assert result.linearization is None
+    assert result.longest_prefix == ()
+    assert result.explored_states == 1
+
+
 def test_empty_history_is_linearizable_with_zero_timeout() -> None:
     result = check_history(
         Model(initial=lambda: 0, step=register_step), History(()), timeout=0

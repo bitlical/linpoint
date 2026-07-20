@@ -20,10 +20,10 @@ class Model(Generic[State]):
 
 
 def _default_outcomes_equal(expected: Outcome, observed: Outcome) -> bool:
-    if isinstance(expected, Raised) and isinstance(observed, Raised):
-        return expected == observed
     if isinstance(expected, Returned) and isinstance(observed, Returned):
         return bool(expected.value == observed.value)
+    if isinstance(expected, Raised) and isinstance(observed, Raised):
+        return expected == observed
     return False
 
 
